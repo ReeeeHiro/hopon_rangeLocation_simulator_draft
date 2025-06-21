@@ -1,0 +1,202 @@
+
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>航続可能距離シミュレーター + 地図</title>
+  <style>
+    body {
+      font-family: 'Noto Sans', sans-serif;
+      background-color: #1a9499;
+      color: #ffffff;
+      margin: 0;
+      padding: 20px;
+    }
+    h1 {
+      color: #ffffff;
+    }
+    .container {
+      max-width: 600px;
+      margin: auto;
+      background: #ffffff22;
+      padding: 20px;
+      border-radius: 12px;
+    }
+    label {
+      display: block;
+      margin-top: 15px;
+      font-weight: bold;
+    }
+    input[type=range], select {
+      width: 100%;
+      margin-top: 6px;
+    }
+    .stepper-buttons {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 6px;
+    }
+    .stepper-buttons button {
+      flex: 1;
+      padding: 10px;
+      font-size: 1.2em;
+      background-color: #ffffff;
+      color: #1a9499;
+      border: none;
+      border-radius: 6px;
+      margin: 0 5px;
+    }
+    .radio-group {
+      margin-top: 10px;
+    }
+    .radio-group label {
+      margin-right: 10px;
+      font-weight: normal;
+    }
+    .result {
+      margin-top: 20px;
+      padding: 12px;
+      background-color: #ffffff;
+      color: #1a9499;
+      font-size: 1.2em;
+      border-radius: 8px;
+    }
+    .map-section {
+      margin-top: 20px;
+    }
+    #map {
+      width: 100%;
+      height: 300px;
+      border-radius: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>電動三輪車 航続距離シミュレーター</h1>
+
+    <label>バッテリー電圧 (V): <span id="voltageValue">73.00</span></label>
+    <input type="range" id="voltage" min="50" max="73" step="0.01" value="73" style="direction: rtl;">
+    <div class="stepper-buttons">
+      <button id="decrease">−</button>
+      <button id="increase">＋</button>
+    </div>
+
+    <label for="passengers">乗車人数:</label>
+    <select id="passengers">
+      <option value="1">1名</option>
+      <option value="2">2名</option>
+      <option value="3">3名</option>
+    </select>
+
+    <label>走行モード:</label>
+    <div class="radio-group">
+      <label><input type="radio" name="mode" value="eco"> エコ</label>
+      <label><input type="radio" name="mode" value="standard" checked> 標準</label>
+      <label><input type="radio" name="mode" value="power"> パワー</label>
+    </div>
+
+    <label for="spot">目的地を選択：</label>
+    <select id="spot"></select>
+    <button onclick="checkDistance()">移動可否を判定</button>
+
+    <div class="result" id="result">航続可能距離: <strong id="distance">--</strong> km</div>
+    <div class="result" id="judgment">移動可否: --</div>
+    <div class="map-section"><div id="map"></div></div>
+  </div>
+
+  <script>
+    const voltageSlider = document.getElementById('voltage');
+    const voltageValueDisplay = document.getElementById('voltageValue');
+    const passengersSelect = document.getElementById('passengers');
+    const modeRadios = document.getElementsByName('mode');
+    const distanceDisplay = document.getElementById('distance');
+    const decreaseBtn = document.getElementById('decrease');
+    const increaseBtn = document.getElementById('increase');
+    const spotSelect = document.getElementById('spot');
+    const judgmentDisplay = document.getElementById('judgment');
+
+    let voltage = 73.00;
+    let mapData = {};
+    let map, userMarker;
+
+    function calculateDistance(voltage, passengers, mode) {
+      const maxDistance = 113;
+      let distance = -257 + 5.14 * voltage + 1.1e-33 * Math.pow(voltage, 2);
+      if (mode === 'eco') distance *= 1.1;
+      if (mode === 'power') distance *= 0.8;
+      if (passengers > 1) distance *= Math.pow(0.85, passengers - 1);
+      return Math.min(distance, maxDistance).toFixed(2);
+    }
+
+    function updateUI() {
+      voltage = parseFloat(voltageSlider.value);
+      voltageValueDisplay.textContent = voltage.toFixed(2);
+      const passengers = parseInt(passengersSelect.value);
+      const mode = [...modeRadios].find(r => r.checked).value;
+      const result = calculateDistance(voltage, passengers, mode);
+      distanceDisplay.textContent = result;
+    }
+
+    function checkDistance() {
+      navigator.geolocation.getCurrentPosition((position) => {
+        const userLoc = new google.maps.LatLng(position.coords.latitude, position.coords.longitude);
+        const spot = mapData.spots[spotSelect.value];
+        const spotLoc = new google.maps.LatLng(spot.lat, spot.lng);
+        const storeLoc = new google.maps.LatLng(mapData.store.lat, mapData.store.lng);
+        const service = new google.maps.DistanceMatrixService();
+
+        service.getDistanceMatrix({
+          origins: [userLoc],
+          destinations: [spotLoc, storeLoc],
+          travelMode: 'DRIVING'
+        }, (response, status) => {
+          if (status === 'OK') {
+            const d1 = response.rows[0].elements[0].distance.value / 1000;
+            const d2 = google.maps.geometry.spherical.computeDistanceBetween(spotLoc, storeLoc) / 1000;
+            const total = d1 + d2;
+            const currentRange = parseFloat(distanceDisplay.textContent);
+            judgmentDisplay.innerHTML = `移動可否: <strong>${total <= currentRange ? '可能' : '不可'}（必要距離 ${total.toFixed(2)}km）</strong>`;
+          }
+        });
+
+        if (userMarker) userMarker.setMap(null);
+        userMarker = new google.maps.Marker({ position: userLoc, map: map, title: '現在地' });
+        map.setCenter(userLoc);
+      });
+    }
+
+    function initMap() {
+      fetch('map_data.json')
+        .then(res => res.json())
+        .then(data => {
+          mapData = data;
+          map = new google.maps.Map(document.getElementById('map'), {
+            center: { lat: mapData.store.lat, lng: mapData.store.lng },
+            zoom: 12
+          });
+
+          new google.maps.Marker({ position: mapData.store, map: map, title: mapData.store.name });
+
+          mapData.spots.forEach((spot, i) => {
+            spotSelect.innerHTML += `<option value="${i}">${spot.name}</option>`;
+            new google.maps.Marker({ position: spot, map: map, title: spot.name });
+          });
+
+          updateUI();
+        });
+    }
+
+    voltageSlider.addEventListener('input', () => { voltage = parseFloat(voltageSlider.value); updateUI(); });
+    decreaseBtn.addEventListener('click', () => { voltage = Math.max(50, voltage - 0.01); voltageSlider.value = voltage; updateUI(); });
+    increaseBtn.addEventListener('click', () => { voltage = Math.min(73, voltage + 0.01); voltageSlider.value = voltage; updateUI(); });
+    passengersSelect.addEventListener('change', updateUI);
+    modeRadios.forEach(r => r.addEventListener('change', updateUI));
+
+    window.initMap = initMap;
+  </script>
+
+  <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyDqD3CcPm1BJQzX45dtE-53JtwTvyYmNm4&libraries=geometry&callback=initMap" async defer></script>
+</body>
+</html>
